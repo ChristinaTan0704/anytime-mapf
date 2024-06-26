@@ -1,6 +1,6 @@
 # Anytime Multi-Agent Path Finding
 
-This repository is directly modified based on [official bandit repo](https://github.com/thomyphan/anytime-mapf) and support using JSON file as input to initilize the solution. 
+This repository is directly modified based on [official bandit repo](https://github.com/thomyphan/anytime-mapf) and support using JSON file as input to initilize the solution. This modified repository is for getting the result for project [Benchmarking Large Neighborhood Search for Multi-Agent Path Finding](https://github.com/ChristinaTan0704/mapf-lns-benchmark/tree/main).
 
 
 ## Installation
