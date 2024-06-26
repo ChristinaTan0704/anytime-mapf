@@ -7,6 +7,7 @@ class InitLNS : public BasicLNS
 {
 public:
     vector<Agent>& agents;
+    double replan_time_limit = 0.6;
     int num_of_colliding_pairs = 0;
 
     InitLNS(const Instance& instance, vector<Agent>& agents, double time_limit,

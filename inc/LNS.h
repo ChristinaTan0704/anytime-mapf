@@ -12,7 +12,6 @@
 #include "winpibt.h"
 
 enum destroy_heuristic { RANDOMAGENTS, RANDOMWALK, INTERSECTION, DESTROY_COUNT };
-
 class LNS : public BasicLNS
 {
 public:
@@ -23,6 +22,11 @@ public:
     int sum_of_costs_lowerbound = -1;
     int sum_of_distances = -1;
     int restart_times = 0;
+    int uniform_neighbor=0;
+    int specified_neighbor=0;
+    int log_step = 1;
+    string state_json = "";
+    double replan_time_limit = 0.6;
 
     LNS(const Instance& instance, double time_limit,
         const string & init_algo_name, const string & replan_algo_name, const string & destroy_name,

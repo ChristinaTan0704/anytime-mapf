@@ -15,12 +15,15 @@ int main(int argc, char** argv)
 	desc.add_options()
 		("help", "produce help message")
 
+        ("state", po::value<string>()->default_value(""), "json file that stores the state")
 		// params for the input instance and experiment settings
+        ("log_step", po::value<int>()->default_value(1), "number of agents")
 		("map,m", po::value<string>()->required(), "input file for map")
 		("agents,a", po::value<string>()->required(), "input file for agents")
 		("agentNum,k", po::value<int>()->default_value(0), "number of agents")
         ("output,o", po::value<string>(), "output file name (no extension)")
         ("outputPaths", po::value<string>(), "output file for paths")
+        ("replanTime", po::value<double>()->default_value(0.6), "cutoff time for one replan (seconds)")
         ("cutoffTime,t", po::value<double>()->default_value(7200), "cutoff time (seconds)")
 		("screen,s", po::value<int>()->default_value(0),
 		        "screen option (0: none; 1: LNS results; 2:LNS detailed results; 3:MAPF detailed results)")
@@ -35,15 +38,14 @@ int main(int argc, char** argv)
         // params for LNS
         ("initLNS", po::value<bool>()->default_value(true),
              "use LNS to find initial solutions if the initial sovler fails")
-        ("neighborSize", po::value<int>()->default_value(8), "Size of the neighborhood")
-        ("neighborCandidateSizes", po::value<int>()->default_value(1), "Number of possible neighborhood sizes (bandit adaptation)")
+        ("neighborSize", po::value<int>()->default_value(0), "Size of the neighborhood; if neighborSize != 0 and uniform_neighbor == 0 will use the specified nb size")
+        ("uniform_neighbor", po::value<int>()->default_value(3), "uniformly genreate the neighbor_size or not (0) use the neighborSize (1) sample from {2,4,8,16,32} (2) sample a random int from range 5 ~ 16 (3 / other) use the nb_size selected by bandit arm")
+        ("neighborCandidateSizes", po::value<int>()->default_value(5), "Number of possible neighborhood sizes (bandit adaptation); ONLY IF neighborCandidateSizes > 1 we will use the second layer of bandit arms") 
         ("maxIterations", po::value<int>()->default_value(0), "maximum number of iterations")
         ("initAlgo", po::value<string>()->default_value("PP"),
                 "MAPF algorithm for finding the initial solution (EECBS, PP, PPS, CBS, PIBT, winPIBT)")
         ("replanAlgo", po::value<string>()->default_value("PP"),
                 "MAPF algorithm for replanning (EECBS, CBS, PP)")
-        ("destroyStrategy", po::value<string>()->default_value("Adaptive"),
-                "Heuristics for finding subgroups (Random, RandomWalk, Intersection, Adaptive)")
         ("pibtWindow", po::value<int>()->default_value(5),
              "window size for winPIBT")
         ("winPibtSoftmode", po::value<bool>()->default_value(true),
@@ -69,7 +71,7 @@ int main(int argc, char** argv)
 
 	srand((int)time(0));
 
-	Instance instance(vm["map"].as<string>(), vm["agents"].as<string>(),
+    Instance instance(vm["map"].as<string>(), vm["agents"].as<string>(), vm["state"].as<string>(),
 		vm["agentNum"].as<int>());
     double time_limit = vm["cutoffTime"].as<double>();
     int screen = vm["screen"].as<int>();
@@ -80,13 +82,17 @@ int main(int argc, char** argv)
         LNS lns(instance, time_limit,
                 vm["initAlgo"].as<string>(),
                 vm["replanAlgo"].as<string>(),
-                vm["destroyStrategy"].as<string>(),
+                "bandit",
                 vm["neighborSize"].as<int>(),
                 vm["maxIterations"].as<int>(),
                 vm["initLNS"].as<bool>(),
                 vm["initDestroyStrategy"].as<string>(),
                 vm["sipp"].as<bool>(),
                 screen, pipp_option, vm["banditAlgo"].as<string>(), vm["neighborCandidateSizes"].as<int>());
+        lns.uniform_neighbor = vm["uniform_neighbor"].as<int>();
+        lns.replan_time_limit = vm["replanTime"].as<double>();
+        lns.state_json = vm["state"].as<string>();
+        lns.log_step = vm["log_step"].as<int>();
         bool succ = lns.run();
         if (succ)
         {

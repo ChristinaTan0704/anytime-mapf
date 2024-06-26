@@ -1,6 +1,32 @@
 #include "LNS.h"
 #include "ECBS.h"
 #include <queue>
+#include <random>
+#include <array>
+#include <nlohmann/json.hpp>
+
+int getRandomFromSetExp() {
+    std::array<int, 5> values = {2, 4, 8, 16, 32};
+    // Random number generator
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(0, values.size() - 1);
+
+    // Generate random index and return the value at that index
+    int randomIndex = distrib(gen);
+    return values[randomIndex];
+}
+
+int getRandomFromRange() {
+    // Random number generator
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(5, 16); // Adjusted to cover the range [5, 16]
+
+    // Generate and return a random number from the range [0, 31]
+    return distrib(gen);
+}
+
 
 LNS::LNS(const Instance& instance, double time_limit, const string & init_algo_name, const string & replan_algo_name,
          const string & destroy_name, int neighbor_size, int num_of_iterations, bool use_init_lns,
@@ -11,37 +37,39 @@ LNS::LNS(const Instance& instance, double time_limit, const string & init_algo_n
          path_table(instance.map_size), pipp_option(pipp_option)
 {
     start_time = Time::now();
-    replan_time_limit = time_limit / 100;
-    if (destroy_name == "Adaptive")
+    specified_neighbor = neighbor_size;
+    // init the bandit stats
+    int num_heu;
+    if (destroy_name == "Adaptive"){
+        num_heu = DESTROY_COUNT;
+    }
+    else{
+        num_heu = 1;
+    }
+    heuristicBanditStats.destroy_weights.assign(num_heu, 1);
+    heuristicBanditStats.destroy_weights_squared.assign(num_heu, 1);
+    heuristicBanditStats.destroy_counts.assign(num_heu, 0);
+    decay_factor = 0;
+    reaction_factor = 0;
+    if(numberOfNeighborhoodSizeCandidates > 0)
     {
-        ALNS = true;
-        heuristicBanditStats.destroy_weights.assign(DESTROY_COUNT, 1);
-        heuristicBanditStats.destroy_weights_squared.assign(DESTROY_COUNT, 1);
-        heuristicBanditStats.destroy_counts.assign(DESTROY_COUNT, 0);
-        decay_factor = 0;
-        reaction_factor = 0;
-        if(numberOfNeighborhoodSizeCandidates > 0)
+        for(int index = 0; index < num_heu; index++)
         {
-            for(int index = 0; index < DESTROY_COUNT; index++)
-            {
-                neighborhoodBanditStats.push_back(new BanditStats());
-                neighborhoodBanditStats[index]->destroy_weights.assign(numberOfNeighborhoodSizeCandidates, 1);
-                neighborhoodBanditStats[index]->destroy_weights_squared.assign(numberOfNeighborhoodSizeCandidates, 1);
-                neighborhoodBanditStats[index]->destroy_counts.assign(numberOfNeighborhoodSizeCandidates, 0);
-            }
+            neighborhoodBanditStats.push_back(new BanditStats());
+            neighborhoodBanditStats[index]->destroy_weights.assign(numberOfNeighborhoodSizeCandidates, 1);
+            neighborhoodBanditStats[index]->destroy_weights_squared.assign(numberOfNeighborhoodSizeCandidates, 1);
+            neighborhoodBanditStats[index]->destroy_counts.assign(numberOfNeighborhoodSizeCandidates, 0);
         }
     }
+
+    if (destroy_name == "Adaptive")
+        ALNS = true;
     else if (destroy_name == "RandomWalk")
         destroy_strategy = RANDOMWALK;
     else if (destroy_name == "Intersection")
         destroy_strategy = INTERSECTION;
     else if (destroy_name == "Random")
         destroy_strategy = RANDOMAGENTS;
-    else
-    {
-        cerr << "Destroy heuristic " << destroy_name << " does not exists. " << endl;
-        exit(-1);
-    }
 
     int N = instance.getDefaultNumberOfAgents();
     agents.reserve(N);
@@ -61,39 +89,67 @@ bool LNS::run()
         sum_of_distances += agent.path_planner->my_heuristic[agent.path_planner->start_location];
     }
 
+    bool succ = false;
     initial_solution_runtime = 0;
     start_time = Time::now();
-    bool succ = getInitialSolution();
-    initial_solution_runtime = ((fsec)(Time::now() - start_time)).count();
-    if (!succ && initial_solution_runtime < time_limit)
-    {
-        if (use_init_lns)
+    if (state_json == ""){
+        succ = getInitialSolution();
+        initial_solution_runtime = ((fsec)(Time::now() - start_time)).count();
+        if (!succ && initial_solution_runtime < time_limit)
         {
-            init_lns = new InitLNS(instance, agents, time_limit - initial_solution_runtime,
-                    replan_algo_name,init_destroy_name, neighbor_size, screen, bandit_algorithm_name, numberOfNeighborhoodSizeCandidates);
-            succ = init_lns->run();
-            if (succ) // accept new paths
+            if (use_init_lns)
             {
-                path_table.reset();
-                for (const auto & agent : agents)
+                init_lns = new InitLNS(instance, agents, time_limit - initial_solution_runtime,
+                        replan_algo_name,init_destroy_name, neighbor_size, screen, bandit_algorithm_name, numberOfNeighborhoodSizeCandidates);
+                init_lns->replan_time_limit = replan_time_limit;
+                succ = init_lns->run();
+                if (succ) // accept new paths
                 {
-                    path_table.insertPath(agent.id, agent.path);
+                    path_table.reset();
+                    for (const auto & agent : agents)
+                    {
+                        path_table.insertPath(agent.id, agent.path);
+                    }
+                    init_lns->clear();
+                    initial_sum_of_costs = init_lns->sum_of_costs;
+                    sum_of_costs = initial_sum_of_costs;
                 }
-                init_lns->clear();
-                initial_sum_of_costs = init_lns->sum_of_costs;
-                sum_of_costs = initial_sum_of_costs;
-            }
-            initial_solution_runtime = ((fsec)(Time::now() - start_time)).count();
-        }
-        else // use random restart
-        {
-            while (!succ && initial_solution_runtime < time_limit)
-            {
-                succ = getInitialSolution();
                 initial_solution_runtime = ((fsec)(Time::now() - start_time)).count();
-                restart_times++;
+            }
+            else // use random restart
+            {
+                while (!succ && initial_solution_runtime < time_limit)
+                {
+                    succ = getInitialSolution();
+                    initial_solution_runtime = ((fsec)(Time::now() - start_time)).count();
+                    restart_times++;
+                }
             }
         }
+    }
+    else{
+        using json = nlohmann::json;
+        std::ifstream f(state_json);
+        json data = json::parse(f);
+        neighbor.sum_of_costs = 0;
+        for (auto & [key, value] : data.items()){
+            Path path;
+            int id = std::stoi(key);
+            for (const auto& pair : value) {
+                int row = static_cast<int>(pair[0]);
+                int col = static_cast<int>(pair[1]);
+                auto loc = instance.num_of_cols * row + col;
+                path.emplace_back(PathEntry(loc));
+            }
+            agents[id].path = path;
+            neighbor.sum_of_costs += path.size() - 1;
+            path_table.insertPath(agents[id].id, agents[id].path);
+        }
+        succ = true;
+        initial_sum_of_costs = neighbor.sum_of_costs;
+        sum_of_costs = neighbor.sum_of_costs;
+        initial_solution_runtime = ((fsec)(Time::now() - start_time)).count();
+        cout << "load initial state from " << state_json << endl;
     }
 
     int searchSuccess = succ? 1 : 0;
@@ -102,9 +158,8 @@ bool LNS::run()
     runtime = initial_solution_runtime;
     if (succ)
     {
-        if (screen >= 1)
-            cout << "Initial solution cost = " << initial_sum_of_costs << ", "
-                 << "runtime = " << initial_solution_runtime << endl;
+        cout << "Initial solution cost = " << initial_sum_of_costs << ", "
+                << "runtime = " << initial_solution_runtime << endl;
     }
     else
     {
@@ -112,24 +167,44 @@ bool LNS::run()
              << runtime << " seconds after  " << restart_times << " restarts" << endl;
         return false; // terminate because no initial solution is found
     }
-
-    while (runtime < time_limit && iteration_stats.size() <= num_of_iterations)
+    double lns_runtime = 0;
+    while (lns_runtime < time_limit or iteration_stats.size() <= num_of_iterations)
     {
+
+
         runtime =((fsec)(Time::now() - start_time)).count();
         if(screen >= 1)
             validateSolution();
-        if (ALNS)
-        {
-            chooseDestroyHeuristicbyALNS();
+
+
+        auto removal_start = Time::now();
+
+        sampleDestroyHeuristicAndNeighborhoodSize(); // only sample the nb size
+
+        if (uniform_neighbor==0){ // use the specified nb_size
+            neighbor_size = specified_neighbor ;
+        }
+        else if (uniform_neighbor==1){ // sample from {2,4,8,16,32}
+            neighbor_size =getRandomFromSetExp();
+        }
+        else if (uniform_neighbor==2){ // sample a random int from range 5 ~ 16
+            neighbor_size =getRandomFromRange();
         }
 
         switch (destroy_strategy)
         {
+
             case RANDOMWALK:
                 succ = generateNeighborByRandomWalk();
+                if (not succ){
+                    cout << "RANDOMWALK Failed to generate a neighbor" << endl;
+                }
                 break;
             case INTERSECTION:
                 succ = generateNeighborByIntersection();
+                if (not succ){
+                    cout << "INTERSECTION Failed to generate a neighbor" << endl;
+                }
                 break;
             case RANDOMAGENTS:
                 neighbor.agents.resize(agents.size());
@@ -142,11 +217,15 @@ bool LNS::run()
                 }
                 assert(neighbor.agents.size() > 0);
                 succ = true;
+                if (not succ){
+                    cout << "RANDOMAGENTS Failed to generate a neighbor" << endl;
+                }
                 break;
             default:
                 cerr << "Wrong neighbor generation strategy" << endl;
                 exit(-1);
         }
+        auto removal_time =  ((fsec)(Time::now() - removal_start)).count() ;
         searchSuccess = succ? 1 : 0;
         if(!succ)
             continue;
@@ -161,7 +240,7 @@ bool LNS::run()
             path_table.deletePath(neighbor.agents[i], agents[neighbor.agents[i]].path);
             neighbor.old_sum_of_costs += agents[neighbor.agents[i]].path.size() - 1;
         }
-
+        auto replan_start_time = Time::now();
         if (replan_algo_name == "EECBS")
             succ = runEECBS();
         else if (replan_algo_name == "CBS")
@@ -173,24 +252,39 @@ bool LNS::run()
             cerr << "Wrong replanning strategy" << endl;
             exit(-1);
         }
-
-        if (ALNS) // update destroy heuristics
-        {
-            const bool condition = neighbor.old_sum_of_costs > neighbor.sum_of_costs;
-            double value = (neighbor.old_sum_of_costs - neighbor.sum_of_costs);//
-            if(neighbor.agents.size())
-            {
-                value /= neighbor.agents.size();
-            }
-            updateDestroyAndNeighborhoodWeights(value, condition);
+        auto replan_time = ((fsec)(Time::now() - replan_start_time)).count();
+        if (replan_time > replan_time_limit){
+            replan_time = replan_time_limit;
         }
+        if (iteration_stats.size() <= 2000  or  iteration_stats.size() % log_step == 0 or replan_time > replan_time_limit){
+            cout << "lns_runtime : " << lns_runtime << " replan_time : " << replan_time << " neighbor_size  : " << neighbor_size << " group_size : " << neighbor.agents.size() << " removal_time : " << removal_time <<  endl;
+        }
+        
+        removal_start = Time::now();
+        const bool condition = neighbor.old_sum_of_costs > neighbor.sum_of_costs;
+        double value = (neighbor.old_sum_of_costs - neighbor.sum_of_costs);
+        if(neighbor.agents.size())
+        {
+            value /= neighbor.agents.size();
+        }
+        updateDestroyAndNeighborhoodWeights(value, condition);
+        removal_time +=  ((fsec)(Time::now() - removal_start)).count() ;
+
+        lns_runtime = lns_runtime + replan_time + removal_time;
+
         runtime = ((fsec)(Time::now() - start_time)).count();
         sum_of_costs += neighbor.sum_of_costs - neighbor.old_sum_of_costs;
-        if (screen >= 1)
+        
+        int sum_of_delay = 0;
+        for (int i = 0; i < agents.size(); i++){
+            sum_of_delay += agents[i].getNumOfDelays();
+        }
+        if (iteration_stats.size() <= 2000  or  iteration_stats.size() % log_step == 0 or replan_time > replan_time_limit){
             cout << "Iteration " << iteration_stats.size() << ", "
-                 << "group size = " << neighbor.agents.size() << ", "
-                 << "solution cost = " << sum_of_costs << ", "
-                 << "remaining time = " << time_limit - runtime << endl;
+                << "group size = " << neighbor.agents.size() << ", "
+                << "solution cost = " << sum_of_costs << ", "
+                << "remaining time = " << time_limit - lns_runtime << ", sum_of_delay = " << sum_of_delay << endl;
+        }
         iteration_stats.emplace_back(neighbor.agents.size(), sum_of_costs, runtime, replan_algo_name, 0, 0, searchSuccess);
     }
 
@@ -200,13 +294,18 @@ bool LNS::run()
         average_group_size += data.num_of_agents;
     if (average_group_size > 0)
         average_group_size /= (double)(iteration_stats.size() - 1);
+        
+    int sum_of_delay = 0;
+    for (int i = 0; i < agents.size(); i++){
+        sum_of_delay += agents[i].getNumOfDelays();
+    }
 
-    cout << getSolverName() << ": "
-         << "runtime = " << runtime << ", "
-         << "iterations = " << iteration_stats.size() << ", "
+    cout << getSolverName() << ": Iterations = " << iteration_stats.size() << ", "
          << "solution cost = " << sum_of_costs << ", "
          << "initial solution cost = " << initial_sum_of_costs << ", "
-         << "failed iterations = " << num_of_failures << endl;
+         << "lns_runtime = " << lns_runtime << ", "
+         << "group size = " << average_group_size << ", "
+         << "failed iterations = " << num_of_failures << ", sum_of_delay = " << sum_of_delay << endl;
     return true;
 }
 
@@ -386,7 +485,7 @@ bool LNS::runPP()
         T = min(T, replan_time_limit);
     auto time = Time::now();
     ConstraintTable constraint_table(instance.num_of_cols, instance.map_size, &path_table);
-    while (p != shuffled_agents.end() && ((fsec)(Time::now() - time)).count() < T)
+    while (p != shuffled_agents.end() && ((fsec)(Time::now() - time)).count() < replan_time_limit)
     {
         int id = *p;
         if (screen >= 3)
@@ -402,7 +501,7 @@ bool LNS::runPP()
         path_table.insertPath(agents[id].id, agents[id].path);
         ++p;
     }
-    if (remaining_agents == 0 && neighbor.sum_of_costs <= neighbor.old_sum_of_costs) // accept new paths
+    if (remaining_agents == 0 && neighbor.sum_of_costs <= neighbor.old_sum_of_costs && ((fsec)(Time::now() - time)).count() < replan_time_limit ) // accept new paths
     {
         return true;
     }
@@ -624,7 +723,7 @@ bool LNS::generateNeighborByRandomWalk()
     
     set<int> neighbors_set;
     neighbors_set.insert(a);
-    randomWalk(a, agents[a].path[0].location, 0, neighbors_set, neighbor_size, (int) agents[a].path.size() - 1);
+    // randomWalk(a, agents[a].path[0].location, 0, neighbors_set, neighbor_size, (int) agents[a].path.size() - 1);
     int count = 0;
     while (neighbors_set.size() < neighbor_size && count < 10)
     {
@@ -638,7 +737,7 @@ bool LNS::generateNeighborByRandomWalk()
         {
             if (i == idx)
             {
-                a = i;
+                a = n;
                 break;
             }
             i++;

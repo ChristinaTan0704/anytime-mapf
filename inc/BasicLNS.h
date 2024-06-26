@@ -75,7 +75,7 @@ protected:
     // input params
     const Instance& instance; // avoid making copies of this variable as much as possible
     double time_limit;
-    double replan_time_limit; // time limit for replanning
+    // double replan_time_limit; // time limit for replanning
     int neighbor_size;
     int neighbor_arm_index;
     int screen;
